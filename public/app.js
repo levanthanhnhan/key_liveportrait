@@ -88,7 +88,7 @@ $("generateBtn").addEventListener("click", async () => {
   }
 });
 
-$("images").addEventListener("change", (e) => {a
+$("images").addEventListener("change", (e) => {
   const preview = $("imagePreview");
   preview.innerHTML = "";
 
