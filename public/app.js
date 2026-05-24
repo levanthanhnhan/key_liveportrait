@@ -49,7 +49,11 @@ $("generateBtn").addEventListener("click", async () => {
   log("Uploading files to Render, then forwarding to Colab GPU API...");
 
   try {
-    const response = await fetch("/api/generate", { method: "POST", body: form });
+    const response = await fetch("/api/generate", {
+      method: "POST",
+      body: form
+    });
+
     if (!response.ok) {
       const text = await response.text();
       throw new Error(text);
@@ -57,30 +61,60 @@ $("generateBtn").addEventListener("click", async () => {
 
     const blob = await response.blob();
     const videoEl = $("outputVideo");
+    const link = $("downloadLink");
+
     const reader = new FileReader();
 
     reader.onload = () => {
-      videoEl.src = reader.result;
+      const videoDataUrl = reader.result;
+
+      videoEl.src = videoDataUrl;
       videoEl.controls = true;
       videoEl.load();
 
-      const link = $("downloadLink");
-      link.href = reader.result;
+      link.href = videoDataUrl;
       link.classList.remove("hidden");
+
+      status.textContent = "Done";
+      log("Output video received.");
+    };
+
+    reader.onerror = () => {
+      throw new Error("Cannot read output video blob.");
     };
 
     reader.readAsDataURL(blob);
-
-    const link = $("downloadLink");
-    link.href = url;
-    link.classList.remove("hidden");
-
-    status.textContent = "Done";
-    log("Output video received.");
   } catch (err) {
     status.textContent = "Error";
     log(err.message || String(err));
   } finally {
     btn.disabled = false;
   }
+});
+
+$("images").addEventListener("change", (e) => {
+  const preview = $("imagePreview");
+  preview.innerHTML = "";
+
+  for (const file of e.target.files) {
+    const img = document.createElement("img");
+    img.src = URL.createObjectURL(file);
+    preview.appendChild(img);
+  }
+});
+
+$("video").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  const preview = $("videoPreview");
+  preview.innerHTML = "";
+
+  if (!file) return;
+
+  const video = document.createElement("video");
+  video.src = URL.createObjectURL(file);
+  video.controls = true;
+  video.playsInline = true;
+  video.muted = true;
+
+  preview.appendChild(video);
 });
