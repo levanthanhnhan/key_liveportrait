@@ -78,7 +78,7 @@ $("generateBtn").addEventListener("click", async () => {
     link.href = videoUrl;
     link.classList.remove("hidden");
 
-    status.textContent = "Done";
+    status.classList.add("hidden");
     log("Output video received.");
   } catch (err) {
     status.textContent = "Error";
