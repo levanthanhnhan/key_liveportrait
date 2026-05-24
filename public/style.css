@@ -46,14 +46,6 @@ pre { white-space: pre-wrap; color: var(--muted); background: rgba(0,0,0,.22); b
   .app { padding: 18px; }
 }
 #outputVideo {
-  display: block;
-  width: 100%;
-  max-height: 520px;
-  border-radius: 20px;
-  background: #000;
-  object-fit: contain;
-}
-
-.hidden {
-  display: none !important;
+  pointer-events: auto;
+  z-index: 2;
 }

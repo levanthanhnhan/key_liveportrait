@@ -56,11 +56,20 @@ $("generateBtn").addEventListener("click", async () => {
     }
 
     const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
     const videoEl = $("outputVideo");
-    videoEl.src = url;
-    videoEl.load();
-    videoEl.play().catch(() => {});
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      videoEl.src = reader.result;
+      videoEl.controls = true;
+      videoEl.load();
+
+      const link = $("downloadLink");
+      link.href = reader.result;
+      link.classList.remove("hidden");
+    };
+
+    reader.readAsDataURL(blob);
 
     const link = $("downloadLink");
     link.href = url;
