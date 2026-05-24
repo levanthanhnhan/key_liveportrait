@@ -45,3 +45,15 @@ pre { white-space: pre-wrap; color: var(--muted); background: rgba(0,0,0,.22); b
   .upload-grid, .controls { grid-template-columns: 1fr; }
   .app { padding: 18px; }
 }
+#outputVideo {
+  display: block;
+  width: 100%;
+  max-height: 520px;
+  border-radius: 20px;
+  background: #000;
+  object-fit: contain;
+}
+
+.hidden {
+  display: none !important;
+}

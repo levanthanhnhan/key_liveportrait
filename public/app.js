@@ -60,6 +60,7 @@ $("generateBtn").addEventListener("click", async () => {
     const videoEl = $("outputVideo");
     videoEl.src = url;
     videoEl.load();
+    videoEl.play().catch(() => {});
 
     const link = $("downloadLink");
     link.href = url;
