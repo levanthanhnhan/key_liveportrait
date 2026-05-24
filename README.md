@@ -1,54 +1,32 @@
-# Avatar Motion Web
+# Avatar Motion Web - Render Node Proxy to Colab GPU
 
-Web app Node.js + frontend hiện đại để upload nhiều ảnh mặt, upload driving video, chỉnh thông số hậu kỳ, rồi gọi Python + LivePortrait để tạo video output.
+This version is designed for free/demo deployment:
 
-## 1. Cài Node dependencies
+- Render runs the Node.js web app.
+- Google Colab runs LivePortrait on GPU.
+- ngrok exposes the Colab FastAPI URL.
+- Render forwards uploaded files to Colab and streams back the output video.
 
-```bash
-npm install
-```
+## Render setup
 
-## 2. Cài Python dependencies
-
-```bash
-pip install opencv-python numpy
-```
-
-## 3. Cài LivePortrait
-
-Tạo thư mục `external` rồi clone LivePortrait:
+Build Command:
 
 ```bash
-mkdir -p external
-git clone https://github.com/KwaiVGI/LivePortrait.git external/LivePortrait
-cd external/LivePortrait
-pip install -r requirements.txt
+npm install && pip install -r requirements.txt
 ```
 
-Tải pretrained weights theo hướng dẫn chính thức của repo LivePortrait.
-
-## 4. Chạy web
+Start Command:
 
 ```bash
 npm start
 ```
 
-Mở:
+Environment Variable:
 
 ```text
-http://localhost:3000
+PYTHON_API_URL=https://YOUR_NGROK_URL.ngrok-free.app
 ```
 
-## 5. Cấu hình môi trường nếu cần
+## Important
 
-```bash
-PYTHON_BIN=python3 \
-LIVEPORTRAIT_REPO=/absolute/path/to/LivePortrait \
-npm start
-```
-
-## Ghi chú
-
-- Dùng cho avatar có consent.
-- Output mặc định có disclosure text `AI-generated avatar`.
-- Nếu muốn production, nên chuyển job sang queue như BullMQ/Redis thay vì giữ request HTTP quá lâu.
+This Render app does not run LivePortrait locally. If your logs show `Python exited`, you are using the old server.js.

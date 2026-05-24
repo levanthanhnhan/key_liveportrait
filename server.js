@@ -1,170 +1,142 @@
 import express from "express";
-import cors from "cors";
 import multer from "multer";
-import { nanoid } from "nanoid";
-import { spawn } from "child_process";
-import path from "path";
+import cors from "cors";
 import fs from "fs";
-import { fileURLToPath } from "url";
+import path from "path";
+import FormData from "form-data";
+import fetch from "node-fetch";
+import dotenv from "dotenv";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Render reads environment variables from its dashboard.
+dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const PYTHON_BIN = process.env.PYTHON_BIN || "python";
-const PIPELINE_PATH = process.env.PIPELINE_PATH || path.join(__dirname, "python", "motion_avatar_pipeline.py");
-const LIVEPORTRAIT_REPO = process.env.LIVEPORTRAIT_REPO || path.join(__dirname, "external", "LivePortrait");
-
-const uploadDir = path.join(__dirname, "uploads");
-const outputDir = path.join(__dirname, "outputs");
-const workDir = path.join(__dirname, "work");
-
-for (const dir of [uploadDir, outputDir, workDir]) {
-  fs.mkdirSync(dir, { recursive: true });
-}
+const PYTHON_API_URL = process.env.PYTHON_API_URL;
 
 app.use(cors());
+app.use(express.static("public"));
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
-app.use("/outputs", express.static(outputDir));
+
+const uploadRoot = path.join(process.cwd(), "uploads");
+fs.mkdirSync(uploadRoot, { recursive: true });
 
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const jobId = req.jobId || nanoid(10);
-    req.jobId = jobId;
-    const jobDir = path.join(uploadDir, jobId);
-    fs.mkdirSync(path.join(jobDir, "images"), { recursive: true });
-    fs.mkdirSync(path.join(jobDir, "video"), { recursive: true });
-
-    if (file.fieldname === "images") cb(null, path.join(jobDir, "images"));
-    else if (file.fieldname === "drivingVideo") cb(null, path.join(jobDir, "video"));
-    else cb(new Error("Unknown upload field"));
-  },
+  destination: (req, file, cb) => cb(null, uploadRoot),
   filename: (req, file, cb) => {
-    const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
-    cb(null, `${Date.now()}-${safeName}`);
-  },
+    const safe = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
+    cb(null, `${Date.now()}-${safe}`);
+  }
 });
 
 const upload = multer({
   storage,
   limits: {
-    fileSize: 1024 * 1024 * 700,
-    files: 40,
-  },
+    fileSize: 250 * 1024 * 1024,
+    files: 30
+  }
 });
 
-function clampNumber(value, min, max, fallback) {
-  const num = Number(value);
-  if (!Number.isFinite(num)) return fallback;
-  return Math.min(max, Math.max(min, num));
+function cleanupFiles(files = []) {
+  for (const file of files) {
+    if (!file?.path) continue;
+    fs.unlink(file.path, () => {});
+  }
 }
 
-function runPythonJob({ jobId, imagesDir, drivingVideoPath, params }) {
-  return new Promise((resolve, reject) => {
-    const outputPath = path.join(outputDir, `${jobId}.mp4`);
-    const jobWorkDir = path.join(workDir, jobId);
-    fs.mkdirSync(jobWorkDir, { recursive: true });
-
-    const args = [
-      PIPELINE_PATH,
-      "--backend", "liveportrait",
-      "--liveportrait_repo", LIVEPORTRAIT_REPO,
-      "--driving_video", drivingVideoPath,
-      "--source_images", imagesDir,
-      "--workdir", jobWorkDir,
-      "--output", outputPath,
-      "--driving_multiplier", String(params.drivingMultiplier),
-      "--animation_region", params.animationRegion,
-      "--grain_strength", String(params.grainStrength),
-      "--motion_blur_alpha", String(params.motionBlurAlpha),
-      "--brightness", String(params.brightness),
-      "--contrast", String(params.contrast),
-      "--gamma", String(params.gamma),
-      "--saturation", String(params.saturation),
-      "--sharpen_amount", String(params.sharpenAmount),
-      "--disclosure_text", params.disclosureText,
-    ];
-
-    if (params.cropDrivingVideo) args.push("--flag_crop_driving_video");
-
-    const child = spawn(PYTHON_BIN, args, {
-      cwd: __dirname,
-      env: process.env,
-    });
-
-    let logs = "";
-    child.stdout.on("data", (data) => {
-      logs += data.toString();
-    });
-    child.stderr.on("data", (data) => {
-      logs += data.toString();
-    });
-
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(`Python exited with code ${code}\n${logs}`));
-        return;
-      }
-      resolve({ outputPath, outputUrl: `/outputs/${jobId}.mp4`, logs });
-    });
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    mode: "render-node-proxy-to-colab",
+    pythonApiConfigured: Boolean(PYTHON_API_URL)
   });
-}
+});
 
 app.post(
   "/api/generate",
   upload.fields([
-    { name: "images", maxCount: 30 },
-    { name: "drivingVideo", maxCount: 1 },
+    { name: "video", maxCount: 1 },
+    { name: "images", maxCount: 20 }
   ]),
   async (req, res) => {
+    const uploaded = [
+      ...(req.files?.video || []),
+      ...(req.files?.images || [])
+    ];
+
     try {
-      const jobId = req.jobId;
+      if (!PYTHON_API_URL) {
+        return res.status(500).json({
+          error: "Missing PYTHON_API_URL. Set it in Render Environment Variables, for example https://xxxx.ngrok-free.app"
+        });
+      }
+
+      const video = req.files?.video?.[0];
       const images = req.files?.images || [];
-      const videos = req.files?.drivingVideo || [];
 
+      if (!video) {
+        return res.status(400).json({ error: "Missing driving video." });
+      }
       if (!images.length) {
-        return res.status(400).json({ error: "Please upload at least one face image." });
-      }
-      if (!videos.length) {
-        return res.status(400).json({ error: "Please upload a driving video." });
+        return res.status(400).json({ error: "Please upload at least one source image." });
       }
 
-      const params = {
-        drivingMultiplier: clampNumber(req.body.drivingMultiplier, 0.1, 2.0, 1.0),
-        grainStrength: clampNumber(req.body.grainStrength, 0, 12, 3.0),
-        motionBlurAlpha: clampNumber(req.body.motionBlurAlpha, 0, 0.25, 0.08),
-        brightness: clampNumber(req.body.brightness, -30, 30, 2),
-        contrast: clampNumber(req.body.contrast, 0.8, 1.3, 1.03),
-        gamma: clampNumber(req.body.gamma, 0.7, 1.4, 0.98),
-        saturation: clampNumber(req.body.saturation, 0.7, 1.3, 1.02),
-        sharpenAmount: clampNumber(req.body.sharpenAmount, 0, 0.5, 0.12),
-        animationRegion: ["exp", "pose", "lip", "eyes", "all"].includes(req.body.animationRegion)
-          ? req.body.animationRegion
-          : "all",
-        cropDrivingVideo: req.body.cropDrivingVideo === "true",
-        disclosureText: req.body.disclosureText || "AI-generated avatar",
-      };
+      const form = new FormData();
+      form.append("video", fs.createReadStream(video.path), video.originalname);
 
-      const imagesDir = path.dirname(images[0].path);
-      const drivingVideoPath = videos[0].path;
-      const result = await runPythonJob({ jobId, imagesDir, drivingVideoPath, params });
+      for (const img of images) {
+        form.append("images", fs.createReadStream(img.path), img.originalname);
+      }
 
-      res.json({
-        ok: true,
-        jobId,
-        outputUrl: result.outputUrl,
-        logs: result.logs.slice(-6000),
+      const allowedFields = [
+        "grain_strength",
+        "motion_blur_alpha",
+        "brightness",
+        "contrast",
+        "gamma",
+        "saturation",
+        "sharpen_amount",
+        "driving_multiplier",
+        "animation_region"
+      ];
+
+      for (const key of allowedFields) {
+        if (req.body[key] !== undefined && req.body[key] !== "") {
+          form.append(key, req.body[key]);
+        }
+      }
+
+      const colabUrl = `${PYTHON_API_URL.replace(/\/$/, "")}/generate`;
+      const response = await fetch(colabUrl, {
+        method: "POST",
+        body: form,
+        headers: form.getHeaders()
       });
+
+      if (!response.ok) {
+        const text = await response.text();
+        return res.status(response.status).json({
+          error: "Colab API failed.",
+          details: text.slice(0, 5000)
+        });
+      }
+
+      res.setHeader("Content-Type", "video/mp4");
+      res.setHeader("Content-Disposition", "inline; filename=output.mp4");
+      response.body.pipe(res);
     } catch (err) {
       console.error(err);
-      res.status(500).json({ error: err.message || "Generation failed" });
+      res.status(500).json({
+        error: "Generate failed.",
+        details: err.message
+      });
+    } finally {
+      cleanupFiles(uploaded);
     }
   }
 );
 
-app.listen(PORT, () => {
-  console.log(`Avatar Motion Web running at http://localhost:${PORT}`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`PYTHON_API_URL=${PYTHON_API_URL || "NOT_SET"}`);
 });

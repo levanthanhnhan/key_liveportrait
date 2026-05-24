@@ -1,88 +1,76 @@
-const form = document.querySelector("#generatorForm");
-const imageInput = document.querySelector("#images");
-const videoInput = document.querySelector("#drivingVideo");
-const imagePreview = document.querySelector("#imagePreview");
-const drivingPreview = document.querySelector("#drivingPreview");
-const outputVideo = document.querySelector("#outputVideo");
-const downloadLink = document.querySelector("#downloadLink");
-const statusBox = document.querySelector("#status");
-const logsBox = document.querySelector("#logs");
-const generateBtn = document.querySelector("#generateBtn");
+const $ = (id) => document.getElementById(id);
 
-const sliderNames = [
-  "drivingMultiplier",
-  "grainStrength",
-  "motionBlurAlpha",
-  "brightness",
-  "contrast",
-  "gamma",
-  "saturation",
-  "sharpenAmount",
+const sliders = [
+  ["grain", "grainValue"], ["blur", "blurValue"], ["brightness", "brightnessValue"],
+  ["contrast", "contrastValue"], ["gamma", "gammaValue"], ["saturation", "saturationValue"],
+  ["sharpen", "sharpenValue"], ["driving", "drivingValue"]
 ];
 
-for (const name of sliderNames) {
-  const input = form.elements[name];
-  const value = document.querySelector(`#${name}Value`);
-  const sync = () => value.textContent = input.value;
-  input.addEventListener("input", sync);
-  sync();
+for (const [inputId, labelId] of sliders) {
+  const input = $(inputId);
+  const label = $(labelId);
+  input.addEventListener("input", () => label.textContent = input.value);
 }
 
-imageInput.addEventListener("change", () => {
-  imagePreview.innerHTML = "";
-  for (const file of [...imageInput.files].slice(0, 12)) {
-    const img = document.createElement("img");
-    img.src = URL.createObjectURL(file);
-    imagePreview.appendChild(img);
+function log(message) {
+  const el = $("log");
+  el.textContent += `${new Date().toLocaleTimeString()} - ${message}\n`;
+  el.scrollTop = el.scrollHeight;
+}
+
+$("generateBtn").addEventListener("click", async () => {
+  const images = $("images").files;
+  const video = $("video").files[0];
+  const btn = $("generateBtn");
+  const status = $("status");
+
+  if (!images.length || !video) {
+    alert("Hãy upload ít nhất 1 ảnh và 1 video motion.");
+    return;
   }
-});
 
-videoInput.addEventListener("change", () => {
-  const file = videoInput.files[0];
-  if (!file) return;
-  drivingPreview.src = URL.createObjectURL(file);
-  drivingPreview.hidden = false;
-});
+  const form = new FormData();
+  form.append("video", video);
+  for (const img of images) form.append("images", img);
 
-function setStatus(text, mode) {
-  statusBox.textContent = text;
-  statusBox.className = `status ${mode}`;
-}
+  form.append("grain_strength", $("grain").value);
+  form.append("motion_blur_alpha", $("blur").value);
+  form.append("brightness", $("brightness").value);
+  form.append("contrast", $("contrast").value);
+  form.append("gamma", $("gamma").value);
+  form.append("saturation", $("saturation").value);
+  form.append("sharpen_amount", $("sharpen").value);
+  form.append("driving_multiplier", $("driving").value);
+  form.append("animation_region", "all");
 
-form.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  generateBtn.disabled = true;
-  outputVideo.hidden = true;
-  downloadLink.hidden = true;
-  logsBox.textContent = "";
-  setStatus("Đang xử lý...", "running");
-
-  const formData = new FormData(form);
-  formData.set("cropDrivingVideo", form.elements.cropDrivingVideo.checked ? "true" : "false");
+  btn.disabled = true;
+  status.textContent = "Generating...";
+  $("log").textContent = "";
+  log("Uploading files to Render, then forwarding to Colab GPU API...");
 
   try {
-    const response = await fetch("/api/generate", {
-      method: "POST",
-      body: formData,
-    });
-    const data = await response.json();
-
-    if (!response.ok || !data.ok) {
-      throw new Error(data.error || "Generate failed");
+    const response = await fetch("/api/generate", { method: "POST", body: form });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text);
     }
 
-    outputVideo.src = `${data.outputUrl}?t=${Date.now()}`;
-    outputVideo.hidden = false;
-    downloadLink.href = data.outputUrl;
-    downloadLink.download = `avatar-${data.jobId}.mp4`;
-    downloadLink.hidden = false;
-    downloadLink.textContent = "Tải video output";
-    logsBox.textContent = data.logs || "Done";
-    setStatus("Hoàn tất", "done");
-  } catch (error) {
-    logsBox.textContent = error.message;
-    setStatus("Lỗi khi generate", "error");
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const videoEl = $("outputVideo");
+    videoEl.src = url;
+    videoEl.load();
+
+    const link = $("downloadLink");
+    link.href = url;
+    link.classList.remove("hidden");
+
+    status.textContent = "Done";
+    log("Output video received.");
+  } catch (err) {
+    status.textContent = "Error";
+    log(err.message || String(err));
   } finally {
-    generateBtn.disabled = false;
+    btn.disabled = false;
   }
 });
