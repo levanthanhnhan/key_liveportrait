@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Motion Avatar Generator</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <main class="app">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">LivePortrait Motion Control</p>
+        <h1>Tạo video avatar từ ảnh mặt và video motion</h1>
+        <p class="subtext">Upload nhiều ảnh khuôn mặt, một video mẫu chuyển động, chỉnh thông số texture/ánh sáng/motion rồi generate video output.</p>
+      </div>
+      <div class="badge">Consent-based AI avatar</div>
+    </section>
+
+    <section class="grid">
+      <form id="generatorForm" class="panel form-panel">
+        <div class="panel-header">
+          <h2>Input</h2>
+          <p>Ảnh nên rõ mặt, nhiều góc, không filter quá mạnh.</p>
+        </div>
+
+        <div class="input-column">
+          <label class="upload-card">
+            <input id="images" name="images" type="file" accept="image/*" multiple required />
+            <span>Upload images</span>
+            <small>JPG, PNG, WEBP · tối đa 30 ảnh</small>
+          </label>
+          <div id="imagePreview" class="preview-row"></div>
+
+          <label class="upload-card">
+            <input id="drivingVideo" name="drivingVideo" type="file" accept="video/*" required />
+            <span>Upload driving video</span>
+            <small>MP4/MOV · video mẫu motion</small>
+          </label>
+          <video id="drivingPreview" class="video-preview" controls hidden></video>
+        </div>
+
+        <div class="settings-column">
+          <div class="controls">
+          <div class="control-row">
+            <label>Motion strength <b id="drivingMultiplierValue">1.00</b></label>
+            <input name="drivingMultiplier" type="range" min="0.1" max="2" step="0.05" value="1" />
+          </div>
+
+          <div class="control-row">
+            <label>Camera grain <b id="grainStrengthValue">3.0</b></label>
+            <input name="grainStrength" type="range" min="0" max="12" step="0.5" value="3" />
+          </div>
+
+          <div class="control-row">
+            <label>Motion blur <b id="motionBlurAlphaValue">0.08</b></label>
+            <input name="motionBlurAlpha" type="range" min="0" max="0.25" step="0.01" value="0.08" />
+          </div>
+
+          <div class="control-row">
+            <label>Brightness <b id="brightnessValue">2</b></label>
+            <input name="brightness" type="range" min="-30" max="30" step="1" value="2" />
+          </div>
+
+          <div class="control-row">
+            <label>Contrast <b id="contrastValue">1.03</b></label>
+            <input name="contrast" type="range" min="0.8" max="1.3" step="0.01" value="1.03" />
+          </div>
+
+          <div class="control-row">
+            <label>Gamma <b id="gammaValue">0.98</b></label>
+            <input name="gamma" type="range" min="0.7" max="1.4" step="0.01" value="0.98" />
+          </div>
+
+          <div class="control-row">
+            <label>Saturation <b id="saturationValue">1.02</b></label>
+            <input name="saturation" type="range" min="0.7" max="1.3" step="0.01" value="1.02" />
+          </div>
+
+          <div class="control-row">
+            <label>Skin texture sharpen <b id="sharpenAmountValue">0.12</b></label>
+            <input name="sharpenAmount" type="range" min="0" max="0.5" step="0.01" value="0.12" />
+          </div>
+        </div>
+
+        <div class="row-2">
+          <label class="field">
+            Animation region
+            <select name="animationRegion">
+              <option value="all">all</option>
+              <option value="exp">expression</option>
+              <option value="pose">pose</option>
+              <option value="lip">lip</option>
+              <option value="eyes">eyes</option>
+            </select>
+          </label>
+
+          <label class="toggle">
+            <input name="cropDrivingVideo" type="checkbox" checked />
+            <span>Crop driving video</span>
+          </label>
+        </div>
+
+        <label class="field">
+          Disclosure text
+          <input name="disclosureText" value="AI-generated avatar" />
+        </label>
+
+          <div class="generate-area">
+            <button id="generateBtn" class="primary-btn" type="submit">Generate video</button>
+          </div>
+        </div>
+      </form>
+
+      <section class="panel output-panel">
+        <div class="panel-header">
+          <h2>Output</h2>
+          <p>Video kết quả sẽ xuất hiện ở đây sau khi xử lý xong.</p>
+        </div>
+
+        <div class="output-area">
+          <div>
+            <div id="status" class="status idle">Sẵn sàng</div>
+            <video id="outputVideo" class="output-video" controls hidden></video>
+            <a id="downloadLink" class="download" hidden>Tải video</a>
+          </div>
+
+          <details class="logs-box">
+            <summary>Logs</summary>
+            <pre id="logs"></pre>
+          </details>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
