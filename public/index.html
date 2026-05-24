@@ -12,11 +12,10 @@
   <main class="app">
     <section class="hero">
       <div>
-        <p class="eyebrow">LivePortrait + Colab GPU</p>
+        <p class="eyebrow">Key DeepFace</p>
         <h1>Avatar Motion Control</h1>
-        <p class="subtitle">Upload ảnh khuôn mặt và video motion, Render sẽ gửi job sang Colab để xử lý GPU.</p>
+        <p class="subtitle">Upload ảnh khuôn mặt và video motion.</p>
       </div>
-      <div class="status" id="status">Ready</div>
     </section>
 
     <section class="panel input-panel">
@@ -25,7 +24,7 @@
           <label class="dropzone upload-icon-box" for="images">
             <span class="upload-icon">📸</span>
             <span>Source Images</span>
-            <small>Upload nhiều ảnh JPG/PNG/WebP</small>
+            <small>Upload ảnh mẫu</small>
             <input id="images" type="file" accept="image/*" multiple hidden />
           </label>
 
@@ -36,7 +35,7 @@
           <label class="dropzone upload-icon-box" for="video">
             <span class="upload-icon">🎬</span>
             <span>Driving Video</span>
-            <small>Video mẫu motion MP4/MOV</small>
+            <small>Video mẫu motion</small>
             <input id="video" type="file" accept="video/*" hidden />
           </label>
 
@@ -69,9 +68,10 @@
     <section class="panel output-panel">
       <div class="output-header">
         <h2>Output</h2>
+        <div class="status" id="status">Ready</div>
         <a id="downloadLink" class="download hidden" download="output.mp4">Download video</a>
       </div>
-      <video id="outputVideo" controls playsinline preload="metadata"></video>
+      <video id="outputVideo" controls playsinline preload="auto"></video>
       <pre id="log"></pre>
     </section>
   </main>

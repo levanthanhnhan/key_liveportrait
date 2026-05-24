@@ -60,30 +60,26 @@ $("generateBtn").addEventListener("click", async () => {
     }
 
     const blob = await response.blob();
+    const videoBlob = new Blob([blob], { type: "video/mp4" });
+    const videoUrl = URL.createObjectURL(videoBlob);
     const videoEl = $("outputVideo");
     const link = $("downloadLink");
 
-    const reader = new FileReader();
+    videoEl.pause();
+    videoEl.removeAttribute("src");
+    videoEl.load();
 
-    reader.onload = () => {
-      const videoDataUrl = reader.result;
+    videoEl.src = videoUrl;
+    videoEl.controls = true;
+    videoEl.playsInline = true;
+    videoEl.preload = "auto";
+    videoEl.load();
 
-      videoEl.src = videoDataUrl;
-      videoEl.controls = true;
-      videoEl.load();
+    link.href = videoUrl;
+    link.classList.remove("hidden");
 
-      link.href = videoDataUrl;
-      link.classList.remove("hidden");
-
-      status.textContent = "Done";
-      log("Output video received.");
-    };
-
-    reader.onerror = () => {
-      throw new Error("Cannot read output video blob.");
-    };
-
-    reader.readAsDataURL(blob);
+    status.textContent = "Done";
+    log("Output video received.");
   } catch (err) {
     status.textContent = "Error";
     log(err.message || String(err));
@@ -92,7 +88,7 @@ $("generateBtn").addEventListener("click", async () => {
   }
 });
 
-$("images").addEventListener("change", (e) => {
+$("images").addEventListener("change", (e) => {a
   const preview = $("imagePreview");
   preview.innerHTML = "";
 
