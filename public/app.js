@@ -49,7 +49,12 @@ $("generateBtn").addEventListener("click", async () => {
 
   const link = $("downloadLink");
   link.classList.add("hidden");
-  
+
+  const videoEl = $("outputVideo");
+  videoEl.pause();
+  videoEl.removeAttribute("src");
+  videoEl.load();
+
   $("log").textContent = "";
   log("Uploading files to Render, then forwarding to Colab GPU API...");
 
