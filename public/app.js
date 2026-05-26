@@ -44,7 +44,12 @@ $("generateBtn").addEventListener("click", async () => {
   form.append("animation_region", "all");
 
   btn.disabled = true;
+  status.classList.remove("hidden");
   status.textContent = "Generating...";
+
+  const link = $("downloadLink");
+  link.classList.add("hidden");
+  
   $("log").textContent = "";
   log("Uploading files to Render, then forwarding to Colab GPU API...");
 
@@ -77,7 +82,6 @@ $("generateBtn").addEventListener("click", async () => {
 
     link.href = videoUrl;
     link.classList.remove("hidden");
-
     status.classList.add("hidden");
     log("Output video received.");
   } catch (err) {
