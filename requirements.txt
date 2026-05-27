@@ -1,5 +1,7 @@
-opencv-python
-numpy
+opencv-python==4.10.0.84
+opencv-contrib-python==4.10.0.84
+numpy==1.26.4
 fastapi
 uvicorn
 python-multipart
+mediapipe==0.10.21

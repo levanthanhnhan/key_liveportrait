@@ -34,14 +34,14 @@ class PipelineConfig:
     flag_crop_driving_video: bool = False
     animation_region: str = "all"
 
-    grain_strength: float = 14.0
-    motion_blur_alpha: float = 0.24
-    brightness: float = -6
-    contrast: float = 0.82
-    gamma: float = 1.12
-    saturation: float = 0.82
-    sharpen_amount: float = 0.00
-    driving_multiplier: float = 0.62
+    grain_strength: float = 7.5       
+    motion_blur_alpha: float = 0.20
+    brightness: float = -4
+    contrast: float = 0.85
+    gamma: float = 1.10
+    saturation: float = 0.85
+    sharpen_amount: float = 0.18      
+    driving_multiplier: float = 0.95  
 
     disclosure_text: str = ""
     keep_raw: bool = False
@@ -65,69 +65,83 @@ def image_quality_score(path: Path):
     img = cv2.imread(str(path))
     if img is None:
         return -1
-
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
     sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
     brightness = gray.mean()
-
     return sharpness - abs(brightness - 128)
 
 
 def pick_best_source_image(folder: Path):
-    images = [
-        p for p in folder.iterdir()
-        if p.suffix.lower() in IMAGE_EXTS
-    ]
-
+    images = [p for p in folder.iterdir() if p.suffix.lower() in IMAGE_EXTS]
     if not images:
         raise RuntimeError("No images found")
-
     scored = [(image_quality_score(p), p) for p in images]
     scored.sort(reverse=True, key=lambda x: x[0])
-
     return scored[0][1]
 
 
 def newest_mp4(folder: Path, ts: float):
-    mp4s = [
-        p for p in folder.rglob("*.mp4")
-        if p.stat().st_mtime >= ts
-    ]
-
+    mp4s = [p for p in folder.rglob("*.mp4") if p.stat().st_mtime >= ts]
     if not mp4s:
         return None
-
     return max(mp4s, key=lambda p: p.stat().st_mtime)
+
+
+def check_driving_video_safety(video_path: Path):
+    print(">>> Đang phân tích góc quay của Driving Video...")
+    try:
+        import mediapipe as mp
+        from mediapipe.python.solutions import face_mesh as mp_face_mesh_module
+    except ImportError:
+        print("[Cảnh báo] Chưa cài hoặc lỗi MediaPipe. Bỏ qua kiểm tra góc quay.")
+        return True
+
+    cap = cv2.VideoCapture(str(video_path))
+    face_mesh = mp_face_mesh_module.FaceMesh(static_image_mode=False, max_num_faces=1, min_detection_confidence=0.5)
+    unsafe_frames = 0
+    total_frames = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret: break
+        total_frames += 1
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = face_mesh.process(rgb)
+
+        if results.multi_face_landmarks:
+            landmarks = results.multi_face_landmarks[0].landmark
+            nose_x = landmarks[1].x
+            left_x = landmarks[234].x
+            right_x = landmarks[454].x
+            dist_left = abs(nose_x - left_x)
+            dist_right = abs(right_x - nose_x)
+            if dist_left > 0 and dist_right > 0:
+                ratio = max(dist_left / dist_right, dist_right / dist_left)
+                if ratio > 2.2:
+                    unsafe_frames += 1
+
+    cap.release()
+    face_mesh.close()
+    if unsafe_frames > 0:
+        print(f"\n[CẢNH BÁO ĐỎ] Video gốc có góc xoay đầu lớn nguy hiểm ({unsafe_frames}/{total_frames} frames).")
+    else:
+        print("[OK] Góc quay driving video an toàn.")
 
 
 def run_liveportrait(cfg: PipelineConfig, source: Path, raw_output: Path):
     repo = cfg.liveportrait_repo.resolve()
-
     inference = repo / "inference.py"
-
     cmd = [
-        sys.executable,
-        str(inference),
-
-        "-s",
-        str(source.resolve()),
-
-        "-d",
-        str(cfg.driving_video.resolve()),
-
-        "--driving_multiplier",
-        str(cfg.driving_multiplier),
-
-        "--animation_region",
-        cfg.animation_region,
+        sys.executable, str(inference),
+        "-s", str(source.resolve()),
+        "-d", str(cfg.driving_video.resolve()),
+        "--driving_multiplier", str(cfg.driving_multiplier),
+        "--animation_region", cfg.animation_region,
     ]
-
     if cfg.flag_crop_driving_video:
         cmd.append("--flag_crop_driving_video")
 
-    print("Running LivePortrait:", " ".join(cmd))
-
+    print("Running LivePortrait...", " ".join(cmd))
     before = time.time()
     ffmpeg_bin_dir = (cfg.workdir / "ffmpeg_bin").resolve()
     ffmpeg_bin_dir.mkdir(parents=True, exist_ok=True)
@@ -140,487 +154,220 @@ def run_liveportrait(cfg: PipelineConfig, source: Path, raw_output: Path):
     child_env["PYTHONUTF8"] = "1"
     child_env["PYTHONIOENCODING"] = "utf-8"
 
-    result = subprocess.run(
-        cmd,
-        cwd=str(repo),
-        env=child_env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
-
-    print(result.stdout)
-
+    result = subprocess.run(cmd, cwd=str(repo), env=child_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if result.returncode != 0:
-        raise RuntimeError(
-            f"LivePortrait failed with exit code {result.returncode}"
-        )
+        raise RuntimeError(f"LivePortrait lỗi: {result.stdout}")
 
-    animations_dir = repo / "animations"
-
-    generated = newest_mp4(animations_dir, before)
-
+    generated = newest_mp4(repo / "animations", before)
     if generated is None:
-        raise RuntimeError("No generated mp4 found")
-
+        raise RuntimeError("Không tìm thấy file video AI sinh ra.")
     shutil.copy2(generated, raw_output)
 
 
+def pad_to_standard_smartphone_ratio(frame, target_w=720, target_h=1280):
+    """Đưa kích thước dị dạng 674x714 về độ phân giải chuẩn 9:16 smartphone"""
+    h, w = frame.shape[:2]
+    scale = min(target_w / w, target_h / h)
+    nw, nh = int(w * scale), int(h * scale)
+    resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_CUBIC)
+    
+    # Tạo khung nền mờ (Blurred Background Padding) giống hiệu ứng camera quay dọc
+    canvas = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+    canvas = cv2.GaussianBlur(canvas, (99, 99), 15)
+    
+    # Đè khung video chính vào giữa
+    x_offset = (target_w - nw) // 2
+    y_offset = (target_h - nh) // 2
+    canvas[y_offset:y_offset+nh, x_offset:x_offset+nw] = resized
+    return canvas
+
+
 def add_camera_grain(frame, strength):
-    noise = np.random.normal(
-        0,
-        strength,
-        frame.shape
-    ).astype(np.float32)
-
-    out = frame.astype(np.float32) + noise
-
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV).astype(np.float32)
+    v_channel = hsv[:, :, 2] / 255.0
+    shadow_mask = np.power(1.0 - v_channel, 1.5)
+    shadow_mask = np.expand_dims(shadow_mask, axis=2)
+    noise = np.random.normal(0, strength, frame.shape).astype(np.float32)
+    out = frame.astype(np.float32) + (noise * shadow_mask)
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
-def add_motion_blur(frame, prev, alpha):
-    if prev is None:
-        return frame
-
-    return cv2.addWeighted(
-        frame,
-        1.0 - alpha,
-        prev,
-        alpha,
-        0
-    )
-
-
-def adjust_lighting(
-    frame,
-    brightness=0,
-    contrast=1.0,
-    gamma=1.0,
-    saturation=1.0,
-):
-    img = frame.astype(np.float32)
-
-    img = img * contrast + brightness
-
-    img = np.clip(img, 0, 255).astype(np.uint8)
-
-    if gamma != 1.0:
-        table = np.array([
-            ((i / 255.0) ** (1.0 / gamma)) * 255
-            for i in range(256)
-        ]).astype(np.uint8)
-
-        img = cv2.LUT(img, table)
-
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
-
-    hsv[:, :, 1] *= saturation
-    hsv[:, :, 1] = np.clip(hsv[:, :, 1], 0, 255)
-
-    img = cv2.cvtColor(
-        hsv.astype(np.uint8),
-        cv2.COLOR_HSV2BGR
-    )
-
-    return img
+def adjust_lighting_and_pores(frame, sharpen_amount=0.18, frame_idx=0):
+    # Tạo nhiễu khối biểu cảm động (Dynamic Lightcast Fluctuation)
+    blur = cv2.GaussianBlur(frame, (0, 0), 1.5)
+    sharp = cv2.addWeighted(frame, 1.0 + sharpen_amount, blur, -sharpen_amount, 0)
+    
+    h, w = frame.shape[:2]
+    # Tạo khối thớ thịt và lỗ chân lông chuyển động siêu nhỏ (Micro-pore fluctuation)
+    micro_noise = np.random.normal(0, 3.5, (h, w, 3)).astype(np.float32)
+    gray = cv2.cvtColor(sharp, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    mid_tone_mask = np.exp(-0.5 * ((gray - 128) / 40) ** 2)
+    mid_tone_mask = np.expand_dims(mid_tone_mask, axis=2)
+    
+    # Áp biến thiên ánh sáng động lên mặt khi đổi góc quay
+    light_drift = 1.0 + 0.015 * math.sin(frame_idx * 0.15)
+    textured = sharp.astype(np.float32) * light_drift + (micro_noise * mid_tone_mask)
+    return np.clip(textured, 0, 255).astype(np.uint8)
 
 
-def enhance_skin_texture(frame, sharpen_amount=0.12):
-    blur = cv2.GaussianBlur(frame, (0, 0), 1.2)
+def apply_camera_imperfections_and_parallax(frame, frame_idx, prev_frame=None):
+    h, w = frame.shape[:2]
+    out = frame.astype(np.float32)
 
-    sharp = cv2.addWeighted(
-        frame,
-        1.0 + sharpen_amount,
-        blur,
-        -sharpen_amount,
-        0
-    )
+    # 1. EXPOSURE FLICKER (Rung sáng ống kính vật lý)
+    exposure = 1.0 + 0.015 * math.sin(frame_idx * 0.41) + random.uniform(-0.01, 0.01)
+    out *= exposure
+    out = np.clip(out, 0, 255).astype(np.uint8)
 
-    return np.clip(sharp, 0, 255).astype(np.uint8)
+    # 2. TEMPORAL SMOOTHING (Khử giật dịch chuyển tóc tai giữa các frame liên tiếp)
+    if prev_frame is not None:
+        out = cv2.addWeighted(out, 0.85, prev_frame, 0.15, 0)
 
+    # 3. HANDHELD SHAKE & LINEAR SKEW (Rolling shutter nghiêng thực tế)
+    dx = random.uniform(-1.8, 1.8)
+    dy = random.uniform(-1.0, 1.0)
+    skew = (dx / w) * 0.35  
 
-def draw_disclosure(frame, text):
-    if not text:
-        return frame
+    # 4. PSEUDO-PARALLAX BACKGROUND DRIFT
+    # Dịch chuyển nhẹ toàn bộ ma trận hình ảnh để đánh lừa cảm giác tĩnh của kệ sách
+    M = np.float32([[1, skew, dx], [0, 1, dy]])
+    out = cv2.warpAffine(out, M, (w, h), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
 
-    out = frame.copy()
+    # 5. CHROMATIC ABERRATION (Quang sai rìa thấu kính)
+    b, g, r = cv2.split(out)
+    r = np.roll(r, 1, axis=1)
+    b = np.roll(b, -1, axis=1)
+    out = cv2.merge([b, g, r])
 
-    h, w = out.shape[:2]
-
-    cv2.putText(
-        out,
-        text,
-        (20, h - 20),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        (255, 255, 255),
-        2,
-        cv2.LINE_AA
-    )
-
-    return out
+    # 6. JPEG COMPRESSION ARTIFACTS
+    _, encoded = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, random.randint(91, 96)])
+    return cv2.imdecode(encoded, cv2.IMREAD_COLOR)
 
 
 def postprocess_video(cfg: PipelineConfig, input_video: Path):
     cap = cv2.VideoCapture(str(input_video))
-
     fps = cap.get(cv2.CAP_PROP_FPS)
 
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
+    
+    # Ép buộc đầu ra ghi tạm thời ra kích thước chuẩn smartphone
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-
-    writer = cv2.VideoWriter(
-        str(cfg.output),
-        fourcc,
-        fps,
-        (width, height)
-    )
+    temp_processed = cfg.workdir / "temp_processed.mp4"
+    writer = cv2.VideoWriter(str(temp_processed), fourcc, fps, (width, height))
 
     prev = None
-
     frame_idx = 0
 
     while True:
         ok, frame = cap.read()
+        if not ok: break
 
-        if not ok:
-            break
-
-        frame = adjust_lighting(
-            frame,
-            brightness=cfg.brightness,
-            contrast=cfg.contrast,
-            gamma=cfg.gamma,
-            saturation=cfg.saturation,
-        )
-
-        frame = enhance_skin_texture(
-            frame,
-            cfg.sharpen_amount
-        )
-
-        frame = apply_camera_imperfections(
-            frame,
-            frame_idx
-        )
-
-        frame = add_camera_grain(
-            frame,
-            cfg.grain_strength
-        )
-
-        frame = add_motion_blur(
-            frame,
-            prev,
-            cfg.motion_blur_alpha
-        )
-
-        frame = draw_disclosure(
-            frame,
-            cfg.disclosure_text
-        )
+        # Khử tỷ lệ vuông AI -> Đưa về chuẩn khung hình smartphone dọc
+        frame = pad_to_standard_smartphone_ratio(frame, width, height)
+        
+        # Xử lý kết cấu bề mặt da/ánh sáng thay đổi theo góc quay
+        frame = adjust_lighting_and_pores(frame, cfg.sharpen_amount, frame_idx)
+        
+        # Xử lý lỗi cơ học quang học và Temporal chống giật tóc
+        frame = apply_camera_imperfections_and_parallax(frame, frame_idx, prev)
+        
+        # Thêm nhiễu hạt bám vùng tối thực tế
+        frame = add_camera_grain(frame, cfg.grain_strength)
 
         writer.write(frame)
-
         prev = frame.copy()
+        frame_idx += 1
 
     cap.release()
     writer.release()
+    return temp_processed
 
 
-def convert_to_browser_mp4(input_path: Path, output_path: Path):
-    temp = output_path.with_suffix(".browser.mp4")
+def convert_to_camera_spoof_mp4(input_path: Path, output_path: Path):
+    """
+    HÀM QUAN TRỌNG NHẤT: Làm giả hoàn toàn dấu vết phần cứng thiết bị quay di động.
+    - Xoá hoàn toàn vết tích Lavf/Lavc từ FFmpeg/OpenCV.
+    - Ép profile mã hoá giống hệt luồng camera Apple iOS.
+    - Bơm dải âm thanh microphone nền giả lập thực tế để phá bỏ cờ lệnh 'No Audio'.
+    """
+    print(">>> Đang chạy hệ thống ngụy trang Metadata & Âm thanh thực tế...")
 
     cmd = [
         imageio_ffmpeg.get_ffmpeg_exe(), "-y",
         "-i", str(input_path),
+        # Lệnh sinh dải âm thanh Microphone noise floor siêu nhỏ (-55dB) tránh bị bộ quét phát hiện video câm
+        "-f", "lavfi", "-i", "anoisesrc=color=white:amplitude=0.001",
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
-        "-movflags", "+faststart",
+        "-profile:v", "high",
+        "-level:v", "4.1",
+        "-b:v", "14400k",
+        "-minrate", "14400k",
+        "-maxrate", "14400k",
+        "-bufsize", "28800k",
+        "-x264-params", "nal-hrd=cbr:force-cfr=1",
         "-c:a", "aac",
-        str(temp),
+        "-b:a", "64k",
+        "-shortest", # Ngắt track âm thanh khi video kết thúc
+        
+        # BỘ LỆNH ĐÈ METADATA PHẦN CỨNG IPHONE
+        "-map_metadata", "-1", # Xoá sạch toàn bộ metadata cũ của FFmpeg/AI
+        "-metadata", "make=Apple",
+        "-metadata", "model=iPhone 13 Pro",
+        "-metadata", "software=15.4.1",
+        "-metadata:s:v", "handler_name=VideoHandler",
+        "-metadata:s:v", "encoder=Apple iOS v15.4.1 CoreMedia",
+        "-metadata:s:a", "handler_name=AudioHandler",
+        
+        str(output_path),
     ]
 
-    subprocess.run(cmd, check=True)
-    temp.replace(output_path)
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except subprocess.CalledProcessError as exc:
+        print("[FFmpeg stdout]")
+        print(exc.stdout or "")
+        print("[FFmpeg stderr]")
+        print(exc.stderr or "")
+        raise
 
-
-def apply_rolling_shutter(frame, frame_idx):
-    h, w = frame.shape[:2]
-    out = np.zeros_like(frame)
-
-    strength = 1.2 + 0.6 * math.sin(frame_idx * 0.13)
-
-    for y in range(h):
-        phase = frame_idx * 0.18 + y * 0.018
-        shift = int(math.sin(phase) * strength)
-
-        out[y] = np.roll(frame[y], shift, axis=0)
-
-    return out
-
-
-def apply_face_texture_instability(frame, frame_idx):
-    h, w = frame.shape[:2]
-    out = frame.astype(np.float32)
-
-    # vùng mặt tương đối ở giữa frame
-    cx1, cx2 = int(w * 0.28), int(w * 0.72)
-    cy1, cy2 = int(h * 0.16), int(h * 0.78)
-
-    face = out[cy1:cy2, cx1:cx2]
-
-    if face.size == 0:
-        return frame
-
-    fh, fw = face.shape[:2]
-
-    noise = np.random.normal(
-        0,
-        random.uniform(1.2, 3.2),
-        face.shape
-    ).astype(np.float32)
-
-    # mask mềm để không lộ viền
-    mask = np.zeros((fh, fw), dtype=np.float32)
-    cv2.ellipse(
-        mask,
-        (fw // 2, fh // 2),
-        (int(fw * 0.42), int(fh * 0.46)),
-        0,
-        0,
-        360,
-        1,
-        -1
-    )
-    mask = cv2.GaussianBlur(mask, (41, 41), 0)
-    mask = np.expand_dims(mask, axis=2)
-
-    # texture fluctuation rất nhẹ
-    face = face + noise * mask
-
-    # micro contrast drift trên vùng mặt
-    contrast = 1.0 + random.uniform(-0.018, 0.018)
-    face = 128 + (face - 128) * contrast
-
-    out[cy1:cy2, cx1:cx2] = (
-        face * mask + out[cy1:cy2, cx1:cx2] * (1 - mask)
-    )
-
-    return np.clip(out, 0, 255).astype(np.uint8)
-
-
-def apply_camera_imperfections(frame, frame_idx, fps=30):
-    h, w = frame.shape[:2]
-
-    out = frame.astype(np.float32)
-
-    # =========================================================
-    # 1. EXPOSURE FLICKER
-    # =========================================================
-
-    exposure = (
-        1.0
-        + 0.018 * math.sin(frame_idx * 0.37)
-        + random.uniform(-0.012, 0.012)
-    )
-
-    out *= exposure
-
-    # =========================================================
-    # 2. COLOR TEMPERATURE DRIFT
-    # =========================================================
-
-    temp = 1.0 + 0.012 * math.sin(frame_idx * 0.11)
-
-    out[:, :, 2] *= temp
-    out[:, :, 0] *= (2.0 - temp)
-
-    out = np.clip(out, 0, 255).astype(np.uint8)
-
-    # =========================================================
-    # 3. MICRO HANDHELD SHAKE
-    # =========================================================
-
-    dx = random.uniform(-0.7, 0.7)
-    dy = random.uniform(-0.5, 0.5)
-
-    M = np.float32([
-        [1, 0, dx],
-        [0, 1, dy]
-    ])
-
-    out = cv2.warpAffine(
-        out,
-        M,
-        (w, h),
-        flags=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_REFLECT
-    )
-
-    # =========================================================
-    # 4. AUTOFOCUS BREATHING
-    # =========================================================
-
-    zoom = (
-        1.0
-        + 0.0025 * math.sin(frame_idx * 0.09)
-        + random.uniform(-0.001, 0.001)
-    )
-
-    nw = int(w * zoom)
-    nh = int(h * zoom)
-
-    resized = cv2.resize(
-        out,
-        (nw, nh),
-        interpolation=cv2.INTER_LINEAR
-    )
-
-    x1 = max((nw - w) // 2, 0)
-    y1 = max((nh - h) // 2, 0)
-
-    out = resized[y1:y1+h, x1:x1+w]
-
-    if out.shape[0] != h or out.shape[1] != w:
-        out = cv2.resize(out, (w, h))
-
-    # =========================================================
-    # 5. DYNAMIC BLUR FLUCTUATION
-    # =========================================================
-
-    if frame_idx % random.randint(4, 9) == 0:
-        blur_sigma = random.uniform(0.15, 0.45)
-
-        out = cv2.GaussianBlur(
-            out,
-            (3, 3),
-            blur_sigma
-        )
-
-    # =========================================================
-    # 6. SENSOR NOISE (SHADOW-BASED)
-    # =========================================================
-
-    gray = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY)
-
-    gray = gray.astype(np.float32) / 255.0
-
-    shadow_mask = 1.0 - gray
-
-    shadow_mask = np.expand_dims(shadow_mask, axis=2)
-
-    noise_strength = random.uniform(2.0, 5.5)
-
-    noise = np.random.normal(
-        0,
-        noise_strength,
-        out.shape
-    ).astype(np.float32)
-
-    out = out.astype(np.float32)
-
-    out += noise * shadow_mask
-
-    out = np.clip(out, 0, 255).astype(np.uint8)
-
-    # =========================================================
-    # 7. CHROMATIC ABERRATION
-    # =========================================================
-
-    b, g, r = cv2.split(out)
-
-    shift = 1
-
-    r = np.roll(r, shift, axis=1)
-    b = np.roll(b, -shift, axis=1)
-
-    out = cv2.merge([b, g, r])
-
-    out = apply_rolling_shutter(out, frame_idx)
-    out = apply_face_texture_instability(out, frame_idx)
-
-    # =========================================================
-    # 8. JPEG COMPRESSION FLUCTUATION
-    # =========================================================
-
-    quality = random.randint(88, 96)
-
-    _, encoded = cv2.imencode(
-        ".jpg",
-        out,
-        [cv2.IMWRITE_JPEG_QUALITY, quality]
-    )
-
-    out = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
-
-    return out
+    final_output = output_path
+    print(f"\n[HOÀN THÀNH] Video sạch đã được xuất tại: {final_output}")
 
 
 def run_pipeline(cfg: PipelineConfig):
     validate_config(cfg)
-
-    params = {
-        "grain_strength": cfg.grain_strength,
-        "motion_blur_alpha": cfg.motion_blur_alpha,
-        "brightness": cfg.brightness,
-        "contrast": cfg.contrast,
-        "gamma": cfg.gamma,
-        "saturation": cfg.saturation,
-        "sharpen_amount": cfg.sharpen_amount,
-        "driving_multiplier": cfg.driving_multiplier,
-    }
-    print("Pipeline params:")
-    print(json.dumps(params, indent=2))
+    check_driving_video_safety(cfg.driving_video)
 
     source = pick_best_source_image(cfg.source_images)
-
-    print("Selected source image:", source)
-
     raw_output = cfg.workdir / "raw.mp4"
 
     run_liveportrait(cfg, source, raw_output)
-
-    postprocess_video(cfg, raw_output)
-
-    convert_to_browser_mp4(cfg.output, cfg.output)
-
-    print("Done:", cfg.output)
+    temp_processed = postprocess_video(cfg, raw_output)
+    
+    # Đè mã hoá camera thật
+    convert_to_camera_spoof_mp4(temp_processed, cfg.output)
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
-
     parser.add_argument("--driving_video", required=True, type=Path)
     parser.add_argument("--source_images", required=True, type=Path)
     parser.add_argument("--workdir", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-
     parser.add_argument("--backend", default="liveportrait")
     parser.add_argument("--liveportrait_repo", required=True, type=Path)
-
     parser.add_argument("--flag_crop_driving_video", action="store_true")
-
-    parser.add_argument(
-        "--animation_region",
-        default="all",
-        choices=["exp", "pose", "lip", "eyes", "all"]
-    )
-
-    parser.add_argument("--grain_strength", default=14.0, type=float)
-    parser.add_argument("--motion_blur_alpha", default=0.24, type=float)
-    parser.add_argument("--brightness", default=-6, type=float)
-    parser.add_argument("--contrast", default=0.82, type=float)
-    parser.add_argument("--gamma", default=1.12, type=float)
-    parser.add_argument("--saturation", default=0.82, type=float)
-    parser.add_argument("--sharpen_amount", default=0.00, type=float)
-    parser.add_argument("--driving_multiplier", default=0.62, type=float)
-
-    parser.add_argument("--disclosure_text", default="")
-    parser.add_argument("--keep_raw", action="store_true")
-
+    parser.add_argument("--animation_region", default="all", choices=["exp", "pose", "lip", "eyes", "all"])
+    parser.add_argument("--grain_strength", default=7.5, type=float)
+    parser.add_argument("--motion_blur_alpha", default=0.20, type=float)
+    parser.add_argument("--brightness", default=-4, type=float)
+    parser.add_argument("--contrast", default=0.85, type=float)
+    parser.add_argument("--gamma", default=1.10, type=float)
+    parser.add_argument("--saturation", default=0.85, type=float)
+    parser.add_argument("--sharpen_amount", default=0.18, type=float)
+    parser.add_argument("--driving_multiplier", default=0.95, type=float)
     return PipelineConfig(**vars(parser.parse_args()))
 
 
