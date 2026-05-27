@@ -1,18 +1,17 @@
 {
-  "name": "avatar-motion-render-colab",
+  "name": "avatar-motion-local",
   "version": "1.0.0",
   "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "build": "npm install && pip install -r requirements.txt"
+    "build": "npm install && pip install -r requirements.txt",
+    "api": "uvicorn python.python_api:app --host 0.0.0.0 --port 8000"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
-    "form-data": "^4.0.1",
-    "multer": "^1.4.5-lts.1",
-    "node-fetch": "^3.3.2"
+    "multer": "^1.4.5-lts.1"
   }
 }

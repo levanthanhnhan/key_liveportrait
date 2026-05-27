@@ -25,7 +25,7 @@ $("generateBtn").addEventListener("click", async () => {
   const status = $("status");
 
   if (!images.length || !video) {
-    alert("Hãy upload ít nhất 1 ảnh và 1 video motion.");
+    alert("Hay upload it nhat 1 anh va 1 video motion.");
     return;
   }
 
@@ -56,7 +56,7 @@ $("generateBtn").addEventListener("click", async () => {
   videoEl.load();
 
   $("log").textContent = "";
-  log("Uploading files to Render, then forwarding to Colab GPU API...");
+  log("Uploading files and running the local LivePortrait pipeline...");
 
   try {
     const response = await fetch("/api/generate", {
