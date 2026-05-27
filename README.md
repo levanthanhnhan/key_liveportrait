@@ -1,6 +1,6 @@
 # Key LivePortrait Local
 
-Project này chạy hoàn toàn trên máy local. Không dùng Render, Colab hay ngrok nữa.
+Project này chạy hoàn toàn trên máy local.
 
 ## Kiến Trúc
 
