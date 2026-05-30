@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,10 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi"}
 
 
+def log_step(message: str):
+    print(f"\n>>> {message}", flush=True)
+
+
 @dataclass
 class PipelineConfig:
     driving_video: Path
@@ -30,6 +35,9 @@ class PipelineConfig:
 
     backend: str = "liveportrait"
     liveportrait_repo: Path | None = None
+    wan21_refine_cmd: str = ""
+    wan21_prompt: str = "realistic portrait video, natural face motion, stable identity, detailed skin texture"
+    wan21_timeout: int = 0
 
     flag_crop_driving_video: bool = False
     animation_region: str = "all"
@@ -48,6 +56,7 @@ class PipelineConfig:
 
 
 def validate_config(cfg: PipelineConfig):
+    log_step("START Validate config")
     if not cfg.driving_video.exists():
         raise FileNotFoundError(cfg.driving_video)
 
@@ -59,6 +68,7 @@ def validate_config(cfg: PipelineConfig):
 
     cfg.workdir.mkdir(parents=True, exist_ok=True)
     cfg.output.parent.mkdir(parents=True, exist_ok=True)
+    log_step("END Validate config")
 
 
 def image_quality_score(path: Path):
@@ -72,12 +82,15 @@ def image_quality_score(path: Path):
 
 
 def pick_best_source_image(folder: Path):
+    log_step("START Pick source image")
     images = [p for p in folder.iterdir() if p.suffix.lower() in IMAGE_EXTS]
     if not images:
         raise RuntimeError("No images found")
     scored = [(image_quality_score(p), p) for p in images]
     scored.sort(reverse=True, key=lambda x: x[0])
-    return scored[0][1]
+    selected = scored[0][1]
+    log_step(f"END Pick source image: {selected}")
+    return selected
 
 
 def newest_mp4(folder: Path, ts: float):
@@ -88,12 +101,14 @@ def newest_mp4(folder: Path, ts: float):
 
 
 def check_driving_video_safety(video_path: Path):
+    log_step("START Check driving video safety")
     print(">>> Đang phân tích góc quay của Driving Video...")
     try:
         import mediapipe as mp
         from mediapipe.python.solutions import face_mesh as mp_face_mesh_module
     except ImportError:
         print("[Cảnh báo] Chưa cài hoặc lỗi MediaPipe. Bỏ qua kiểm tra góc quay.")
+        log_step("END Check driving video safety")
         return True
 
     cap = cv2.VideoCapture(str(video_path))
@@ -126,9 +141,11 @@ def check_driving_video_safety(video_path: Path):
         print(f"\n[CẢNH BÁO ĐỎ] Video gốc có góc xoay đầu lớn nguy hiểm ({unsafe_frames}/{total_frames} frames).")
     else:
         print("[OK] Góc quay driving video an toàn.")
+    log_step("END Check driving video safety")
 
 
 def run_liveportrait(cfg: PipelineConfig, source: Path, raw_output: Path):
+    log_step("START LivePortrait")
     repo = cfg.liveportrait_repo.resolve()
     inference = repo / "inference.py"
     cmd = [
@@ -153,6 +170,10 @@ def run_liveportrait(cfg: PipelineConfig, source: Path, raw_output: Path):
     child_env["PATH"] = str(ffmpeg_bin_dir) + os.pathsep + child_env.get("PATH", "")
     child_env["PYTHONUTF8"] = "1"
     child_env["PYTHONIOENCODING"] = "utf-8"
+    hf_home = cfg.workdir.parent / ".cache" / "huggingface"
+    child_env.setdefault("HF_HOME", str(hf_home))
+    child_env.setdefault("HUGGINGFACE_HUB_CACHE", str(hf_home / "hub"))
+    child_env.setdefault("TRANSFORMERS_CACHE", str(hf_home / "transformers"))
 
     result = subprocess.run(cmd, cwd=str(repo), env=child_env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if result.returncode != 0:
@@ -162,6 +183,58 @@ def run_liveportrait(cfg: PipelineConfig, source: Path, raw_output: Path):
     if generated is None:
         raise RuntimeError("Không tìm thấy file video AI sinh ra.")
     shutil.copy2(generated, raw_output)
+    log_step(f"END LivePortrait: {raw_output}")
+
+
+def _format_wan21_cmd(cfg: PipelineConfig, source: Path, input_video: Path, output_video: Path):
+    values = {
+        "input": str(input_video.resolve()),
+        "output": str(output_video.resolve()),
+        "source": str(source.resolve()),
+        "driving": str(cfg.driving_video.resolve()),
+        "workdir": str(cfg.workdir.resolve()),
+        "prompt": cfg.wan21_prompt,
+        "python": sys.executable,
+        "wan21_script": str((Path(__file__).resolve().parent / "wan21_refine.py").resolve()),
+    }
+
+    command = cfg.wan21_refine_cmd.strip()
+    if not command:
+        raise RuntimeError(
+            "Backend liveportrait_wan21 cần --wan21_refine_cmd hoặc env WAN21_REFINE_CMD. "
+            "Ví dụ: --wan21_refine_cmd '[\"python\", \"wan_refine.py\", \"--input\", \"{input}\", \"--output\", \"{output}\"]'"
+        )
+
+    try:
+        parsed = json.loads(command)
+        if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+            raise ValueError
+        return [item.format(**values) for item in parsed]
+    except json.JSONDecodeError:
+        posix = os.name != "nt"
+        return [item.format(**values) for item in shlex.split(command, posix=posix)]
+    except ValueError:
+        raise RuntimeError("--wan21_refine_cmd dạng JSON phải là list string.")
+
+
+def run_wan21_refine(cfg: PipelineConfig, source: Path, input_video: Path, output_video: Path):
+    log_step("START Wan2.1 refine")
+    cmd = _format_wan21_cmd(cfg, source, input_video, output_video)
+    print("Running Wan2.1 refine...", " ".join(cmd))
+
+    result = subprocess.run(
+        cmd,
+        cwd=str(cfg.workdir),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=cfg.wan21_timeout or None,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Wan2.1 refine lỗi: {result.stdout}")
+    if not output_video.exists():
+        raise RuntimeError(f"Wan2.1 refine không tạo file output: {output_video}")
+    log_step(f"END Wan2.1 refine: {output_video}")
 
 
 def pad_to_standard_smartphone_ratio(frame, target_w=720, target_h=1280):
@@ -245,6 +318,7 @@ def apply_camera_imperfections_and_parallax(frame, frame_idx, prev_frame=None):
 
 
 def postprocess_video(cfg: PipelineConfig, input_video: Path):
+    log_step("START Postprocess video")
     cap = cv2.VideoCapture(str(input_video))
     fps = cap.get(cv2.CAP_PROP_FPS)
 
@@ -281,6 +355,7 @@ def postprocess_video(cfg: PipelineConfig, input_video: Path):
 
     cap.release()
     writer.release()
+    log_step(f"END Postprocess video: {temp_processed}")
     return temp_processed
 
 
@@ -291,6 +366,7 @@ def convert_to_camera_spoof_mp4(input_path: Path, output_path: Path):
     - Ép profile mã hoá giống hệt luồng camera Apple iOS.
     - Bơm dải âm thanh microphone nền giả lập thực tế để phá bỏ cờ lệnh 'No Audio'.
     """
+    log_step("START Encode final mp4")
     print(">>> Đang chạy hệ thống ngụy trang Metadata & Âm thanh thực tế...")
 
     cmd = [
@@ -334,20 +410,33 @@ def convert_to_camera_spoof_mp4(input_path: Path, output_path: Path):
 
     final_output = output_path
     print(f"\n[HOÀN THÀNH] Video sạch đã được xuất tại: {final_output}")
+    log_step(f"END Encode final mp4: {final_output}")
 
 
 def run_pipeline(cfg: PipelineConfig):
+    log_step(f"START Pipeline backend={cfg.backend}")
     validate_config(cfg)
     check_driving_video_safety(cfg.driving_video)
 
     source = pick_best_source_image(cfg.source_images)
     raw_output = cfg.workdir / "raw.mp4"
 
-    run_liveportrait(cfg, source, raw_output)
-    temp_processed = postprocess_video(cfg, raw_output)
+    if cfg.backend == "liveportrait":
+        run_liveportrait(cfg, source, raw_output)
+        refine_input = raw_output
+    elif cfg.backend == "liveportrait_wan21":
+        run_liveportrait(cfg, source, raw_output)
+        refined_output = cfg.workdir / "wan21_refined.mp4"
+        run_wan21_refine(cfg, source, raw_output, refined_output)
+        refine_input = refined_output
+    else:
+        raise ValueError(f"Unsupported backend: {cfg.backend}")
+
+    temp_processed = postprocess_video(cfg, refine_input)
     
     # Đè mã hoá camera thật
     convert_to_camera_spoof_mp4(temp_processed, cfg.output)
+    log_step(f"END Pipeline: {cfg.output}")
 
 
 def parse_args():
@@ -356,8 +445,11 @@ def parse_args():
     parser.add_argument("--source_images", required=True, type=Path)
     parser.add_argument("--workdir", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--backend", default="liveportrait")
+    parser.add_argument("--backend", default="liveportrait", choices=["liveportrait", "liveportrait_wan21"])
     parser.add_argument("--liveportrait_repo", required=True, type=Path)
+    parser.add_argument("--wan21_refine_cmd", default=os.environ.get("WAN21_REFINE_CMD", ""))
+    parser.add_argument("--wan21_prompt", default=os.environ.get("WAN21_PROMPT", "realistic portrait video, natural face motion, stable identity, detailed skin texture"))
+    parser.add_argument("--wan21_timeout", default=int(os.environ.get("WAN21_TIMEOUT") or "0"), type=int)
     parser.add_argument("--flag_crop_driving_video", action="store_true")
     parser.add_argument("--animation_region", default="all", choices=["exp", "pose", "lip", "eyes", "all"])
     parser.add_argument("--grain_strength", default=7.5, type=float)

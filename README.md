@@ -17,6 +17,12 @@ Luồng chạy:
 Browser UI -> Node /api/generate -> Python pipeline -> LivePortrait local GPU -> output.mp4
 ```
 
+Tuy chon Wan2.1 refine:
+
+```text
+Browser UI -> Node /api/generate -> Python pipeline -> LivePortrait -> Wan2.1 refine -> output.mp4
+```
+
 ## Yêu Cầu
 
 - Windows có NVIDIA GPU.
@@ -31,6 +37,17 @@ LIVEPORTRAIT_REPO=C:\Users\NhanLe\Documents\Project\key_liveportrait_local\key_l
 PYTHON_BIN=C:\Users\NhanLe\Documents\Project\key_liveportrait_local\key_liveportrait\.venv310\Scripts\python.exe
 PORT=3000
 ```
+
+Muon chay LivePortrait truoc, Wan2.1 sau thi them:
+
+```text
+PIPELINE_BACKEND=liveportrait_wan21
+WAN21_REFINE_CMD=["{python}","{wan21_script}","--input","{input}","--output","{output}","--source","{source}","--prompt","{prompt}","--cpu_offload"]
+WAN21_PROMPT=realistic portrait video, natural face motion, stable identity, detailed skin texture
+WAN21_TIMEOUT=0
+```
+
+`WAN21_REFINE_CMD` la lenh goi workflow Wan2.1 rieng cua ban, vi du script Diffusers hoac ComfyUI wrapper. Pipeline se thay `{input}` bang video LivePortrait tam va `{output}` bang file ma Wan2.1 can xuat ra.
 
 ## Chạy Project
 

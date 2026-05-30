@@ -16,6 +16,10 @@ LIVEPORTRAIT_REPO = Path(
     os.environ.get("LIVEPORTRAIT_REPO", PROJECT_ROOT / "LivePortrait")
 ).resolve()
 PYTHON_BIN = os.environ.get("PYTHON_BIN", "python")
+PIPELINE_BACKEND = os.environ.get("PIPELINE_BACKEND", "liveportrait")
+WAN21_REFINE_CMD = os.environ.get("WAN21_REFINE_CMD", "")
+WAN21_PROMPT = os.environ.get("WAN21_PROMPT", "")
+WAN21_TIMEOUT = os.environ.get("WAN21_TIMEOUT", "")
 
 BASE.mkdir(parents=True, exist_ok=True)
 
@@ -81,7 +85,7 @@ async def generate(
         str(PROJECT_ROOT / "python" / "motion_avatar_pipeline.py"),
 
         "--backend",
-        "liveportrait",
+        PIPELINE_BACKEND,
 
         "--liveportrait_repo",
         str(LIVEPORTRAIT_REPO),
@@ -99,7 +103,16 @@ async def generate(
         str(output_path),
 
         "--flag_crop_driving_video",
+    ]
 
+    if WAN21_REFINE_CMD:
+        cmd.extend(["--wan21_refine_cmd", WAN21_REFINE_CMD])
+    if WAN21_PROMPT:
+        cmd.extend(["--wan21_prompt", WAN21_PROMPT])
+    if WAN21_TIMEOUT:
+        cmd.extend(["--wan21_timeout", WAN21_TIMEOUT])
+
+    cmd.extend([
         "--grain_strength",
         str(grain_strength),
 
@@ -126,7 +139,7 @@ async def generate(
 
         "--animation_region",
         animation_region,
-    ]
+    ])
 
     result = subprocess.run(
         cmd,

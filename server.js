@@ -15,6 +15,11 @@ const PYTHON_BIN = process.env.PYTHON_BIN || "python";
 const LIVEPORTRAIT_REPO = path.resolve(
   process.env.LIVEPORTRAIT_REPO || path.join(process.cwd(), "LivePortrait")
 );
+const HF_HOME = path.resolve(process.env.HF_HOME || path.join(process.cwd(), ".cache", "huggingface"));
+const PIPELINE_BACKEND = process.env.PIPELINE_BACKEND || "liveportrait";
+const WAN21_REFINE_CMD = process.env.WAN21_REFINE_CMD || "";
+const WAN21_PROMPT = process.env.WAN21_PROMPT || "";
+const WAN21_TIMEOUT = process.env.WAN21_TIMEOUT || "";
 
 app.use(cors());
 app.use(express.static("public"));
@@ -63,7 +68,10 @@ function runPipeline(args) {
         ...process.env,
         PYTHONUNBUFFERED: "1",
         PYTHONUTF8: "1",
-        PYTHONIOENCODING: "utf-8"
+        PYTHONIOENCODING: "utf-8",
+        HF_HOME,
+        HUGGINGFACE_HUB_CACHE: path.join(HF_HOME, "hub"),
+        TRANSFORMERS_CACHE: path.join(HF_HOME, "transformers")
       }
     });
 
@@ -90,6 +98,9 @@ app.get("/api/health", (req, res) => {
     mode: "local-node-to-liveportrait",
     pythonBin: PYTHON_BIN,
     liveportraitRepo: LIVEPORTRAIT_REPO,
+    hfHome: HF_HOME,
+    backend: PIPELINE_BACKEND,
+    wan21Configured: PIPELINE_BACKEND !== "liveportrait_wan21" || Boolean(WAN21_REFINE_CMD),
     liveportraitConfigured: fs.existsSync(path.join(LIVEPORTRAIT_REPO, "inference.py"))
   });
 });
@@ -154,7 +165,7 @@ app.post(
       const outputPath = path.join(jobDir, "output.mp4");
       const pipelineArgs = [
         path.join("python", "motion_avatar_pipeline.py"),
-        "--backend", "liveportrait",
+        "--backend", PIPELINE_BACKEND,
         "--liveportrait_repo", LIVEPORTRAIT_REPO,
         "--driving_video", videoPath,
         "--source_images", imageDir,
@@ -162,6 +173,16 @@ app.post(
         "--output", outputPath,
         "--flag_crop_driving_video"
       ];
+
+      if (WAN21_REFINE_CMD) {
+        pipelineArgs.push("--wan21_refine_cmd", WAN21_REFINE_CMD);
+      }
+      if (WAN21_PROMPT) {
+        pipelineArgs.push("--wan21_prompt", WAN21_PROMPT);
+      }
+      if (WAN21_TIMEOUT) {
+        pipelineArgs.push("--wan21_timeout", WAN21_TIMEOUT);
+      }
 
       for (const key of allowedFields) {
         if (req.body[key] !== undefined && req.body[key] !== "") {
@@ -205,4 +226,6 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`PYTHON_BIN=${PYTHON_BIN}`);
   console.log(`LIVEPORTRAIT_REPO=${LIVEPORTRAIT_REPO}`);
+  console.log(`HF_HOME=${HF_HOME}`);
+  console.log(`PIPELINE_BACKEND=${PIPELINE_BACKEND}`);
 });

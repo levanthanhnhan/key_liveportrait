@@ -5,3 +5,8 @@ fastapi
 uvicorn
 python-multipart
 mediapipe==0.10.21
+diffusers>=0.38.0
+transformers>=4.57.0,<5
+accelerate
+safetensors
+ftfy
