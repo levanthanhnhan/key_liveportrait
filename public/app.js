@@ -56,7 +56,7 @@ $("generateBtn").addEventListener("click", async () => {
   videoEl.load();
 
   $("log").textContent = "";
-  log("Uploading files and running the local LivePortrait pipeline...");
+  log("Uploading files and running the local LivePortrait + CogVideoX pipeline...");
 
   try {
     const response = await fetch("/api/generate", {

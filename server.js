@@ -12,6 +12,7 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 const PYTHON_BIN = process.env.PYTHON_BIN || "python";
+const DEFAULT_BACKEND = process.env.PIPELINE_BACKEND || "liveportrait_cogvideox";
 const LIVEPORTRAIT_REPO = path.resolve(
   process.env.LIVEPORTRAIT_REPO || path.join(process.cwd(), "LivePortrait")
 );
@@ -87,7 +88,8 @@ function runPipeline(args) {
 app.get("/api/health", (req, res) => {
   res.json({
     ok: true,
-    mode: "local-node-to-liveportrait",
+    mode: "local-node-to-motion-avatar",
+    defaultBackend: DEFAULT_BACKEND,
     pythonBin: PYTHON_BIN,
     liveportraitRepo: LIVEPORTRAIT_REPO,
     liveportraitConfigured: fs.existsSync(path.join(LIVEPORTRAIT_REPO, "inference.py"))
@@ -107,7 +109,17 @@ app.post(
     ];
 
     try {
-      if (!fs.existsSync(path.join(LIVEPORTRAIT_REPO, "inference.py"))) {
+      const backend = req.body.backend || DEFAULT_BACKEND;
+      const needsLivePortrait = backend === "liveportrait" || backend === "liveportrait_cogvideox";
+
+      if (!["liveportrait", "cogvideox", "liveportrait_cogvideox"].includes(backend)) {
+        return res.status(400).json({
+          error: "Unsupported backend.",
+          details: "Use liveportrait, cogvideox, or liveportrait_cogvideox."
+        });
+      }
+
+      if (needsLivePortrait && !fs.existsSync(path.join(LIVEPORTRAIT_REPO, "inference.py"))) {
         return res.status(500).json({
           error: "Missing LivePortrait local repo.",
           details: `Set LIVEPORTRAIT_REPO in .env or place LivePortrait at ${LIVEPORTRAIT_REPO}`
@@ -133,7 +145,21 @@ app.post(
         "saturation",
         "sharpen_amount",
         "driving_multiplier",
-        "animation_region"
+        "animation_region",
+        "cogvideox_model",
+        "cogvideox_v2v_model",
+        "cogvideox_prompt",
+        "cogvideox_negative_prompt",
+        "cogvideox_steps",
+        "cogvideox_guidance_scale",
+        "cogvideox_strength",
+        "cogvideox_fps",
+        "cogvideox_num_frames",
+        "cogvideox_width",
+        "cogvideox_height",
+        "cogvideox_seed",
+        "cogvideox_dtype",
+        "cogvideox_device"
       ];
 
       const jobId = crypto.randomUUID();
@@ -154,7 +180,7 @@ app.post(
       const outputPath = path.join(jobDir, "output.mp4");
       const pipelineArgs = [
         path.join("python", "motion_avatar_pipeline.py"),
-        "--backend", "liveportrait",
+        "--backend", backend,
         "--liveportrait_repo", LIVEPORTRAIT_REPO,
         "--driving_video", videoPath,
         "--source_images", imageDir,
@@ -174,7 +200,7 @@ app.post(
       if (result.code !== 0 || !fs.existsSync(outputPath)) {
         cleanupDirectory(jobDir);
         return res.status(500).json({
-          error: "Local LivePortrait pipeline failed.",
+          error: "Local motion avatar pipeline failed.",
           code: result.code,
           details: result.log
         });
@@ -204,5 +230,6 @@ app.post(
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`PYTHON_BIN=${PYTHON_BIN}`);
+  console.log(`PIPELINE_BACKEND=${DEFAULT_BACKEND}`);
   console.log(`LIVEPORTRAIT_REPO=${LIVEPORTRAIT_REPO}`);
 });

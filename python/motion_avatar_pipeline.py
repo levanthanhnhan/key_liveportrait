@@ -30,6 +30,26 @@ class PipelineConfig:
 
     backend: str = "liveportrait"
     liveportrait_repo: Path | None = None
+    cogvideox_model: str = "THUDM/CogVideoX-5b-I2V"
+    cogvideox_v2v_model: str = "THUDM/CogVideoX-2b"
+    cogvideox_prompt: str = (
+        "A natural handheld smartphone portrait video, subtle head movement, "
+        "realistic lighting, stable identity, detailed face, cinematic realism"
+    )
+    cogvideox_negative_prompt: str = (
+        "distorted face, identity change, extra limbs, warped eyes, low quality, "
+        "blurry, flicker, artifacts"
+    )
+    cogvideox_steps: int = 15
+    cogvideox_guidance_scale: float = 6.0
+    cogvideox_strength: float = 0.35
+    cogvideox_fps: int = 8
+    cogvideox_num_frames: int = 17
+    cogvideox_width: int = 480
+    cogvideox_height: int = 720
+    cogvideox_seed: int | None = None
+    cogvideox_dtype: str = "bfloat16"
+    cogvideox_device: str = "cuda"
 
     flag_crop_driving_video: bool = False
     animation_region: str = "all"
@@ -48,6 +68,10 @@ class PipelineConfig:
 
 
 def validate_config(cfg: PipelineConfig):
+    supported_backends = {"liveportrait", "cogvideox", "liveportrait_cogvideox"}
+    if cfg.backend not in supported_backends:
+        raise ValueError(f"Unsupported backend: {cfg.backend}. Use one of: {', '.join(sorted(supported_backends))}")
+
     if not cfg.driving_video.exists():
         raise FileNotFoundError(cfg.driving_video)
 
@@ -56,6 +80,12 @@ def validate_config(cfg: PipelineConfig):
 
     if not cfg.source_images.exists():
         raise FileNotFoundError(cfg.source_images)
+
+    if cfg.backend in {"liveportrait", "liveportrait_cogvideox"}:
+        if cfg.liveportrait_repo is None:
+            raise ValueError("--liveportrait_repo is required for LivePortrait backends")
+        if not (cfg.liveportrait_repo / "inference.py").exists():
+            raise FileNotFoundError(cfg.liveportrait_repo / "inference.py")
 
     cfg.workdir.mkdir(parents=True, exist_ok=True)
     cfg.output.parent.mkdir(parents=True, exist_ok=True)
@@ -162,6 +192,155 @@ def run_liveportrait(cfg: PipelineConfig, source: Path, raw_output: Path):
     if generated is None:
         raise RuntimeError("Không tìm thấy file video AI sinh ra.")
     shutil.copy2(generated, raw_output)
+
+
+def _cogvideox_torch_dtype(torch_module, dtype_name: str):
+    if dtype_name == "float16":
+        return torch_module.float16
+    if dtype_name == "float32":
+        return torch_module.float32
+    return torch_module.bfloat16
+
+
+def _cogvideox_generator(torch_module, cfg: PipelineConfig):
+    if cfg.cogvideox_seed is None:
+        return None
+    return torch_module.Generator(device=cfg.cogvideox_device).manual_seed(cfg.cogvideox_seed)
+
+
+def _prepare_cogvideox_pipe(pipe, cfg: PipelineConfig):
+    offloaded = False
+    if cfg.cogvideox_device == "cuda" and hasattr(pipe, "enable_model_cpu_offload"):
+        pipe.enable_model_cpu_offload()
+        offloaded = True
+    if hasattr(pipe, "vae") and hasattr(pipe.vae, "enable_slicing"):
+        pipe.vae.enable_slicing()
+    if hasattr(pipe, "vae") and hasattr(pipe.vae, "enable_tiling"):
+        pipe.vae.enable_tiling()
+    return offloaded
+
+
+def _resize_to_cogvideox_frame(frame, width: int, height: int):
+    h, w = frame.shape[:2]
+    scale = min(width / w, height / h)
+    nw = max(8, int(w * scale) // 8 * 8)
+    nh = max(8, int(h * scale) // 8 * 8)
+    resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_AREA)
+    canvas = np.zeros((height, width, 3), dtype=np.uint8)
+    x = (width - nw) // 2
+    y = (height - nh) // 2
+    canvas[y:y + nh, x:x + nw] = resized
+    return canvas
+
+
+def load_cogvideox_video_frames(video_path: Path, cfg: PipelineConfig):
+    from PIL import Image
+
+    cap = cv2.VideoCapture(str(video_path))
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+    if total <= 0:
+        cap.release()
+        raise RuntimeError(f"Could not read frames from {video_path}")
+
+    frame_count = max(1, cfg.cogvideox_num_frames)
+    frame_count = frame_count if (frame_count - 1) % 4 == 0 else ((frame_count - 1) // 4 * 4 + 1)
+    frame_count = min(frame_count, total)
+    indices = np.linspace(0, total - 1, frame_count, dtype=np.int32)
+    wanted = set(int(i) for i in indices)
+
+    frames = []
+    idx = 0
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        if idx in wanted:
+            frame = _resize_to_cogvideox_frame(frame, cfg.cogvideox_width, cfg.cogvideox_height)
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frames.append(Image.fromarray(frame))
+        idx += 1
+
+    cap.release()
+    if not frames:
+        raise RuntimeError(f"Could not prepare CogVideoX frames from {video_path}")
+
+    print(
+        f"Prepared {len(frames)} frames for CogVideoX at "
+        f"{cfg.cogvideox_width}x{cfg.cogvideox_height}."
+    )
+    return frames
+
+
+def run_cogvideox_image_to_video(cfg: PipelineConfig, source: Path, raw_output: Path):
+    print("Running CogVideoX image-to-video...")
+    try:
+        import torch
+        from diffusers import CogVideoXImageToVideoPipeline
+        from diffusers.utils import export_to_video, load_image
+    except ImportError as exc:
+        raise RuntimeError(
+            "CogVideoX requires torch, diffusers, transformers, accelerate, sentencepiece and pillow. "
+            "Install them in the Python environment before using --backend cogvideox."
+        ) from exc
+
+    dtype = _cogvideox_torch_dtype(torch, cfg.cogvideox_dtype)
+    pipe = CogVideoXImageToVideoPipeline.from_pretrained(cfg.cogvideox_model, torch_dtype=dtype)
+    offloaded = _prepare_cogvideox_pipe(pipe, cfg)
+
+    if not offloaded:
+        pipe.to(cfg.cogvideox_device)
+
+    image = load_image(str(source.resolve()))
+    generator = _cogvideox_generator(torch, cfg)
+    result = pipe(
+        image=image,
+        prompt=cfg.cogvideox_prompt,
+        negative_prompt=cfg.cogvideox_negative_prompt or None,
+        height=cfg.cogvideox_height,
+        width=cfg.cogvideox_width,
+        num_inference_steps=cfg.cogvideox_steps,
+        guidance_scale=cfg.cogvideox_guidance_scale,
+        generator=generator,
+        use_dynamic_cfg=True,
+    )
+    export_to_video(result.frames[0], str(raw_output), fps=cfg.cogvideox_fps)
+
+
+def run_cogvideox_video_to_video(cfg: PipelineConfig, input_video: Path, raw_output: Path):
+    print("Running CogVideoX video-to-video refinement...")
+    try:
+        import torch
+        from diffusers import CogVideoXDPMScheduler, CogVideoXVideoToVideoPipeline
+        from diffusers.utils import export_to_video
+    except ImportError as exc:
+        raise RuntimeError(
+            "CogVideoX video-to-video requires torch, diffusers, transformers, accelerate, sentencepiece and pillow. "
+            "Install them in the Python environment before using --backend liveportrait_cogvideox."
+        ) from exc
+
+    dtype = _cogvideox_torch_dtype(torch, cfg.cogvideox_dtype)
+    pipe = CogVideoXVideoToVideoPipeline.from_pretrained(cfg.cogvideox_v2v_model, torch_dtype=dtype)
+    pipe.scheduler = CogVideoXDPMScheduler.from_config(pipe.scheduler.config)
+    offloaded = _prepare_cogvideox_pipe(pipe, cfg)
+
+    if not offloaded:
+        pipe.to(cfg.cogvideox_device)
+
+    video = load_cogvideox_video_frames(input_video, cfg)
+    generator = _cogvideox_generator(torch, cfg)
+    result = pipe(
+        video=video,
+        prompt=cfg.cogvideox_prompt,
+        negative_prompt=cfg.cogvideox_negative_prompt or None,
+        height=cfg.cogvideox_height,
+        width=cfg.cogvideox_width,
+        strength=cfg.cogvideox_strength,
+        guidance_scale=cfg.cogvideox_guidance_scale,
+        num_inference_steps=cfg.cogvideox_steps,
+        generator=generator,
+        use_dynamic_cfg=True,
+    )
+    export_to_video(result.frames[0], str(raw_output), fps=cfg.cogvideox_fps)
 
 
 def pad_to_standard_smartphone_ratio(frame, target_w=720, target_h=1280):
@@ -338,12 +517,23 @@ def convert_to_camera_spoof_mp4(input_path: Path, output_path: Path):
 
 def run_pipeline(cfg: PipelineConfig):
     validate_config(cfg)
-    check_driving_video_safety(cfg.driving_video)
 
     source = pick_best_source_image(cfg.source_images)
     raw_output = cfg.workdir / "raw.mp4"
 
-    run_liveportrait(cfg, source, raw_output)
+    if cfg.backend == "liveportrait":
+        check_driving_video_safety(cfg.driving_video)
+        run_liveportrait(cfg, source, raw_output)
+    elif cfg.backend == "cogvideox":
+        run_cogvideox_image_to_video(cfg, source, raw_output)
+    elif cfg.backend == "liveportrait_cogvideox":
+        check_driving_video_safety(cfg.driving_video)
+        liveportrait_output = cfg.workdir / "liveportrait_raw.mp4"
+        run_liveportrait(cfg, source, liveportrait_output)
+        run_cogvideox_video_to_video(cfg, liveportrait_output, raw_output)
+    else:
+        raise ValueError(f"Unsupported backend: {cfg.backend}")
+
     temp_processed = postprocess_video(cfg, raw_output)
     
     # Đè mã hoá camera thật
@@ -356,8 +546,22 @@ def parse_args():
     parser.add_argument("--source_images", required=True, type=Path)
     parser.add_argument("--workdir", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--backend", default="liveportrait")
-    parser.add_argument("--liveportrait_repo", required=True, type=Path)
+    parser.add_argument("--backend", default="liveportrait", choices=["liveportrait", "cogvideox", "liveportrait_cogvideox"])
+    parser.add_argument("--liveportrait_repo", type=Path)
+    parser.add_argument("--cogvideox_model", default="THUDM/CogVideoX-5b-I2V")
+    parser.add_argument("--cogvideox_v2v_model", default=PipelineConfig.cogvideox_v2v_model)
+    parser.add_argument("--cogvideox_prompt", default=PipelineConfig.cogvideox_prompt)
+    parser.add_argument("--cogvideox_negative_prompt", default=PipelineConfig.cogvideox_negative_prompt)
+    parser.add_argument("--cogvideox_steps", default=PipelineConfig.cogvideox_steps, type=int)
+    parser.add_argument("--cogvideox_guidance_scale", default=PipelineConfig.cogvideox_guidance_scale, type=float)
+    parser.add_argument("--cogvideox_strength", default=PipelineConfig.cogvideox_strength, type=float)
+    parser.add_argument("--cogvideox_fps", default=PipelineConfig.cogvideox_fps, type=int)
+    parser.add_argument("--cogvideox_num_frames", default=PipelineConfig.cogvideox_num_frames, type=int)
+    parser.add_argument("--cogvideox_width", default=PipelineConfig.cogvideox_width, type=int)
+    parser.add_argument("--cogvideox_height", default=PipelineConfig.cogvideox_height, type=int)
+    parser.add_argument("--cogvideox_seed", default=None, type=int)
+    parser.add_argument("--cogvideox_dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
+    parser.add_argument("--cogvideox_device", default="cuda")
     parser.add_argument("--flag_crop_driving_video", action="store_true")
     parser.add_argument("--animation_region", default="all", choices=["exp", "pose", "lip", "eyes", "all"])
     parser.add_argument("--grain_strength", default=7.5, type=float)
